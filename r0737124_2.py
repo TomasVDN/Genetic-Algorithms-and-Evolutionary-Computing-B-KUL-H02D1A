@@ -1,105 +1,185 @@
+import time
+from typing import Tuple
 import Reporter
 import numpy as np
+from numba import jit
 
-# Modify the class name to match your student number.
+@jit(nopython=True)
+def distanceIndividual(numberOfCities: int, distanceMatrix: np.array, individual: np.array) -> float:
+    distance = 0
+    for i in range(numberOfCities - 1):
+        distance += distanceMatrix[individual[i], individual[i+1]]
+    distance += distanceMatrix[individual[numberOfCities-1], individual[0]]
+
+    return distance
+
+@jit(nopython=True)
+def naive2Opt(solution: np.array, numberOfCities: int, distanceMatrix: np.array) -> np.array:
+    """
+    Naive 2-opt implementation: for each pair of nodes (the node and the one following it), check if the new solution is better.
+    solution: 1D numpy array in the cycle notation containing the solution to optimize
+    numberOfCities: number of cities in the problem
+    distanceMatrix: 2D numpy array containing the distance matrix
+    returns: 1D numpy array in the cycle notation containing the optimized solution
+    """
+    for point1 in range(numberOfCities):
+        p1 = solution[point1 - 1]
+        p2 = solution[point1]
+        p3 = solution[(point1 + 1) % numberOfCities]
+        p4 = solution[(point1 + 2) % numberOfCities]
+
+        distance = distanceMatrix[p1][p2] + distanceMatrix[p2][p3] + distanceMatrix[p3][p4]
+        newDistance = distanceMatrix[p1][p3] + distanceMatrix[p3][p2] + distanceMatrix[p2][p4]
+
+        # If the new solution is better, swap the arcs
+        if newDistance < distance:
+            solution[point1] = p3
+            solution[(point1 + 1) % numberOfCities] = p2
+    
+    return solution
+
+@jit(nopython=True)
+def naive3Opt(solution: np.array, numberOfCities: int, distanceMatrix: np.array) -> np.array:
+    '''
+    Naive 3-opt implementation: for each pair of edges, check if the new solution is better.
+    solution: 1D numpy array in the cycle notation containing the solution to optimize
+    numberOfCities: number of cities in the problem
+    distanceMatrix: 2D numpy array containing the distance matrix
+    returns: 1D numpy array in the cycle notation containing the optimized solution
+    '''
+    for point1 in range(numberOfCities):
+        p1 = solution[0]
+        p2 = solution[point1 - 1]
+        p3 = solution[point1]
+        p6 = solution[-1]
+
+        for point2 in range(point1 + 1, numberOfCities):
+            p4 = solution[point2 - 1]
+            p5 = solution[point2]
+
+            distance = distanceMatrix[p2][p3] + distanceMatrix[p4][p5] + distanceMatrix[p6][p1]
+            newDistance = distanceMatrix[p2][p5] + distanceMatrix[p6][p3] + distanceMatrix[p4][p1]
+
+            # If the new solution is better, swap the arcs
+            if newDistance < distance:
+                a = solution[:point1]
+                b = solution[point1:point2]
+                c = solution[point2:]
+                solution = np.concatenate((a, c, b))
+
+    return solution
+
+def greedyRandomized(numberOfCities: int, rcl: float, distanceMatrix: np.array) -> np.array:
+    individual = np.zeros(numberOfCities, dtype=np.int)
+    individual[0] = np.random.randint(0, numberOfCities)
+    
+    used = set(range(numberOfCities))
+    used.remove(individual[0])
+
+    for i in range(1, numberOfCities):
+        # Make a list of the candidates that are not yet used
+        candidates = []
+        notUsed = set(range(numberOfCities)) - used
+        for x in notUsed:
+            candidates.append(x)
+        
+        # Find the minimal distance
+        minimal_distance = np.min(distanceMatrix[individual[i-1]][candidates])
+
+        # Find the allowed distance
+        allowed_distance = (1 + rcl) * minimal_distance
+
+        # Make a list of the candidates that are not yet used and have a distance smaller than the allowed distance
+        candidates = []
+        for x in notUsed:
+            if distanceMatrix[individual[i-1]][x] <= allowed_distance:
+                candidates.append(x)
+
+        # Choose a random candidate from the list
+        individual[i] = np.random.choice(candidates, 1)[0]
+
+        # Add the chosen candidate to the set of used candidates
+        used.add(individual[i])
+
+    return individual
+        
+        
+def randomGreedy(numberOfCities: int, rcl: float, distanceMatrix: np.array) -> np.array:
+        individual = np.zeros(numberOfCities, dtype=np.int)
+        individual[0] = np.random.randint(0, numberOfCities)
+        for i in range(1, numberOfCities, 1):
+            restricted_candidate_list = buildCandidateList(numberOfCities, rcl, distanceMatrix, individual[:i])
+            individual[i] = np.random.choice(restricted_candidate_list, 1)[0]
+        return individual
+
+def buildCandidateList(numberOfCities: int, rcl: float, distanceMatrix: np.array, indices: np.array) -> np.array:
+    last = indices[-1]
+    notUsed = set(range(numberOfCities)) - set(indices[:-1])
+    notUsed.remove(last)
+    candidates = []
+    minimal_distance = np.min(distanceMatrix[last][list(notUsed)])
+    allowed_distance = (1 + rcl) * minimal_distance
+    for x in notUsed:
+        if distanceMatrix[last][x] <= allowed_distance:
+            candidates.append(x)
+    return np.array(candidates)
+
 class r0737124:
 
     def __init__(self):
         self.reporter = Reporter.Reporter(self.__class__.__name__)
-
+        self.distanceMatrix = None
         self.numberOfCities = 0
-        self.distanceMatrix: np.array = None
+        self.bestSolution = None
+        self.bestObjective = np.inf
 
-        self.nearestNeighbourList = None
+        # OPTIONS
+        self.populationSize: int = 25
+        self.numberOffspring: int = 50
+        self.kTournamentSize: int = 5
+        self.rcl: float = 0.1
+        self.mutationRate: float = 0.05
 
-        self.populationSize = 100
-
-        self.population: np.array = None
-        self.populationFitness: np.array = None
-
-        self.kTournamentSelectionSize = 5
-        self.kTournamentEliminationSize = 5
-        self.mutationChance = 0.05
-
-        self.children: np.array = None
 
     # The evolutionary algorithm's main loop
     def optimize(self, filename):
         # Read distance matrix from file.		
         file = open(filename)
-        self.distanceMatrix = np.loadtxt(file, delimiter=",")
+        distanceMatrix = np.loadtxt(file, delimiter=",")
         file.close()
 
-        self.numberOfCities = self.distanceMatrix.shape[0]
-        print(f'Number of cities: {self.numberOfCities}')
+        self.distanceMatrix = distanceMatrix
 
-        print("Starting initialization...")
-        self.initialize()
+        # Get the number of cities
+        self.numberOfCities = distanceMatrix.shape[0]
 
-        self.calculatePopulationFitness()
-        print("Initialization done.")
-
-        meanObjective = 0.0
-        bestObjective = 0.0
-        bestSolution = np.array([1,2,3,4,5])
+        # Initialize the population
+        population = self.initializePopulation()
 
         generation = 1
-
-        # Your code here.
         yourConvergenceTestsHere = True
         while( yourConvergenceTestsHere ):
+            # Recombine the population
+            offspring = self.recombination(population)
+
+            # Mutate the offspring
+            population = self.mutation(population, offspring)
             
-            # Create population size children, and append them to the population.
-            print("Creating children...")
-            self.children = np.empty((0, self.numberOfCities), dtype=int)
-            while len(self.children) < self.populationSize:
-                # Select two parents using tournament selection.
-                parent1 = self.kTournamentSelection(self.kTournamentSelectionSize)
-                parent2 = self.kTournamentSelection(self.kTournamentSelectionSize)
-                while parent2 == parent1:
-                    parent2 = self.kTournamentSelection(self.kTournamentSelectionSize)
+            # Run local optimizer
+            population = self.localOptimization(population)
 
-                # Crossover the parents to create the children.
-                child1, child2 = self.orderCrossover(parent1, parent2)
+            population, distances = self.elimination(population)
+            population, distances = self.removeDuplicates(population, distances)
+            population, distances = self.elitism(population, distances)
 
-                # Calculate the fitness of the children.
-                child1Fitness = self.calculateFitness(child1)
-                child2Fitness = self.calculateFitness(child2)
-
-                # Add the children to the population if their fitness is not infinite.
-                if not np.isinf(child1Fitness):
-                    self.children = np.append(self.children, [child1], axis=0)
-                if not np.isinf(child2Fitness):
-                    self.children = np.append(self.children, [child2], axis=0)
-            print("Children created.")
-
-            # Add the children to the population.
-            self.population = np.append(self.population, self.children, axis=0)
-
-            # Remove the duplicates from the population.
-            self.population = np.unique(self.population, axis=0)
-
-            # Calculate the fitness of the population.
-            self.calculatePopulationFitness()
-
-            # Execute elimination step.
-            print("Executing elimination step...")
-            self.eliminationStep()
-            print("Elimination step executed.")
-
-            # Calculate the fitness of the population.
-            self.normalize()
-            self.calculatePopulationFitness()
             
-            # Calculate the mean and best objective function value of the population.
-            meanObjective = np.mean(self.populationFitness)
-            bestObjective = np.min(self.populationFitness)
-            bestSolution = self.population[np.argmin(self.populationFitness)]
 
+            meanObjective = np.mean(distances)
+            bestObjective = np.min(distances)
+            bestSolution = population[np.argmin(distances)]
             generation += 1
-            print(f'Generation {generation} completed. (mean: {meanObjective}, best: {bestObjective}')
 
-            # Your code here.
+            print(f"Generation {generation}: best objective {bestObjective}, mean objective {meanObjective}")
 
             # Call the reporter with:
             #  - the mean objective function value of the population
@@ -110,205 +190,186 @@ class r0737124:
             if timeLeft < 0:
                 break
 
-        # Your code here.
         return 0
-
-    def initialize(self):
-        '''
-        Initialize the population. For this, create 30% greedy individuals, and 70% random individuals (non infinite).
-        '''
-        self.calculateNearestNeighbourList()
-        amountGreedy = int(self.populationSize * 0.3)
-
-        # Keep the population in a numpy array, where each row is a candidate solution.
-        self.population = np.empty((self.populationSize, self.numberOfCities), dtype=int)
-
-        # Generate the greedy individuals, assuming a candidate could be None.
-        for i in range(amountGreedy):
-            candidate = None
-            while candidate is None:
-                candidate = self.generateGreedyCandidate(np.random.randint(0, self.numberOfCities))
-            self.population[i] = candidate
+    
+    def initializePopulation(self) -> np.array: #TODO check if self.populationSize is not > self.numberOfCities
+        population = np.zeros((self.populationSize, self.numberOfCities), dtype=np.int)
         
-        # Generate the random individuals, assuming a candidate could be None.
-        for i in range(amountGreedy, self.populationSize):
-            candidate = None
-            while candidate is None:
-                candidate = self.generateRandomCandidate()
-            self.population[i] = candidate
+        # Select random cities to start with
+        randomStartCities = np.random.choice(np.arange(self.numberOfCities), self.populationSize, replace=False)
+
+        # Create a greedy solution for each city
+        for index, startCity in enumerate(randomStartCities):
+            population[index] = self.createGreedySolution(startCity)
+        
+        return population
+
+    
+    def createGreedySolution(self, startCity: int) -> np.array:
+        solution = np.zeros(self.numberOfCities, dtype=np.int)
+        solution[0] = startCity
+
+        # Create a list of all cities
+        cities = np.arange(self.numberOfCities)
+        cities = np.delete(cities, startCity)
+
+        # Create a greedy solution
+        for i in range(1, self.numberOfCities):
+            # Get the city with the shortest distance to the previous city
+            city = np.argmin(self.distanceMatrix[solution[i-1], cities])
+            solution[i] = cities[city]
+
+            # Remove the city from the list of cities
+            cities = np.delete(cities, city)
+
+        return solution
+
+    def recombination(self, population: np.array) -> np.array:
+        offspring = np.empty([self.numberOffspring, self.numberOfCities], dtype=np.int)
+
+        # Select parents
+        #parents = self.kTournamentSelection(population, self.numberOffspring)
+        parents = self.rouletteSelection(population, self.numberOffspring)
+
+        # Recombine parents
+        for index in range(0, self.numberOffspring, 2):
+            offspring[index], offspring[index+1] = self.orderCrossover(parents[index], parents[index+1])
+        
+        return offspring
 
 
+    def kTournamentSelection(self, population: np.array, amountOfParents: int) -> np.array:
+        selectedParents = np.empty((amountOfParents, self.numberOfCities), dtype=np.int)
 
-    def calculateNearestNeighbourList(self):
-        """
-        For each city in distanceMatrix, sort the list of indices of the other cities in function of 
-        the distance relative to the current city. Remove all indices for which the distance is 0 of inf.
-        """
-        nearestNeighboursList = []
-        for i in range(self.numberOfCities):
-            nearestNeighboursList.append(np.argsort(self.distanceMatrix[i]))
-            nearestNeighboursList[i] = np.delete(nearestNeighboursList[i], np.where(self.distanceMatrix[i][nearestNeighboursList[i]] == 0))
-            nearestNeighboursList[i] = np.delete(nearestNeighboursList[i], np.where(np.isinf(self.distanceMatrix[i][nearestNeighboursList[i]])))
+        for index in range(amountOfParents):
+            # Select k random individuals
+            randomIndividuals = population[np.random.choice(self.populationSize, self.kTournamentSize, replace=True)]
 
-        self.nearestNeighbourList = nearestNeighboursList
+            # Select the individual with the best fitness
+            distances = self.distancePopulation(randomIndividuals)
+            indexBestIndividual = np.argsort(distances)
 
-    def generateGreedyCandidate(self, startCityIndex: int):
-        """
-        Starting from the given startCityIndex, add the nearest neighbor using self.nearestNeighbourList not already in the visited cities. Continue until all 
-        cities are visited. If the city for which a neighbor must be found does not have any unvisited neighbors, return None.
-        """
-        visitedCities = np.array([startCityIndex])
-        currentCity = startCityIndex
-        while len(visitedCities) < self.numberOfCities:
-            # Find the nearest neighbor not already visited.
-            for neighbor in self.nearestNeighbourList[currentCity]:
-                if neighbor not in visitedCities:
-                    visitedCities = np.append(visitedCities, neighbor)
-                    currentCity = neighbor
-                    break
+            # Add the best individual to the list of selected parents
+            selectedParents[index] = randomIndividuals[indexBestIndividual[0]]
+        
+        return selectedParents
+
+    def rouletteSelection(self, population: np.array, amountOfParents: int) -> np.array:
+        selectedParents = np.empty((amountOfParents, self.numberOfCities), dtype=np.int)
+
+        for index in range(amountOfParents):
+            # Calculate the fitness of each individual
+            distances = self.distancePopulation(population)
+            fitness = 1 / distances
+
+            # Select a random individual
+            randomIndividual = np.random.choice(self.populationSize, 1, replace=True, p=fitness/np.sum(fitness))[0]
+
+            # Add the individual to the list of selected parents
+            selectedParents[index] = population[randomIndividual]
+        
+        return selectedParents
+            
+    def distancePopulation(self, population: np.array) -> np.array:
+        #return np.apply_along_axis(self.numberOfCities, self.distanceMatrix, distanceIndividual, 1, population)
+        distances = np.zeros(population.shape[0])
+        for index, individual in enumerate(population):
+            distances[index] = distanceIndividual(self.numberOfCities, self.distanceMatrix, individual)
+        return distances
+
+    def orderCrossover(self, parent1: np.array, parent2: np.array) -> Tuple[np.array, np.array]:
+        # Select two random points
+        randomPoints = np.random.choice(np.arange(self.numberOfCities), 2, replace=False)
+        start = min(randomPoints)
+        end = max(randomPoints)
+
+        # Create the offspring
+        offspring1 = np.zeros(self.numberOfCities, dtype=np.int)
+        offspring2 = np.zeros(self.numberOfCities, dtype=np.int)
+
+        # Copy the selected part from the parents to the offspring
+        offspring1[start:end] = parent1[start:end]
+        offspring2[start:end] = parent2[start:end]
+
+        # Fill the rest of the offspring with the genes of the other parent
+        usedInOffspring1 = set(parent1[start:end])
+        usedInOffspring2 = set(parent2[start:end])
+
+        sequenceParent1 = []
+        sequenceParent2 = []
+
+        index = end
+        start = True
+        while index != end or start:
+            start = False
+
+            if parent1[index] not in usedInOffspring2:
+                sequenceParent1.append(parent1[index])
+            if parent2[index] not in usedInOffspring1:
+                sequenceParent2.append(parent2[index])
+            index = (index + 1) % self.numberOfCities
+        
+        while len(sequenceParent1) != 0:
+            offspring1[index] = sequenceParent2.pop(0)
+            offspring2[index] = sequenceParent1.pop(0)
+            index = (index + 1) % self.numberOfCities
+
+        return offspring1, offspring2
+
+    def mutation(self, population: np.array, offspring: np.array) -> np.array:
+        newPopulation = np.vstack((population, offspring))
+
+        for index in range(newPopulation.shape[0]):
+            if np.random.rand() < self.mutationRate:
+                newPopulation[index] = self.inverseMutation(newPopulation[index])
+        
+        return newPopulation
+    
+    def inverseMutation(self, individual: np.array) -> np.array:
+        # Select two random points
+        randomPoints = np.random.choice(np.arange(self.numberOfCities), 2, replace=False)
+        start = min(randomPoints)
+        end = max(randomPoints)
+
+        # Inverse the order of the cities between the two points
+        individual[start:end] = individual[start:end][::-1]
+
+        return individual
+
+    def elimination(self, population: np.array) -> Tuple[np.array, np.array]:
+        distances = self.distancePopulation(population)
+        sortedIndices = np.argsort(distances)
+
+        return population[sortedIndices[:self.populationSize]], distances[sortedIndices[:self.populationSize]]
+    
+    def removeDuplicates(self, population: np.array, distances: np.array) -> Tuple[np.array, np.array]:
+        newPopulation = np.empty((self.populationSize, self.numberOfCities), dtype=np.int)
+        newPopulation[0] = population[0]
+
+        for index in range(self.populationSize - 1, 0, -1):
+            if distances[index] == distances[index-1]:
+                newPopulation[index] = randomGreedy(self.numberOfCities, self.rcl, self.distanceMatrix)
             else:
-                return None
+                newPopulation[index] = population[index]
 
-        return visitedCities
+        newDistances = self.distancePopulation(newPopulation)
 
-    def generateRandomCandidate(self):
-        """
-        Starting from a random city, add a random neighbor using self.nearestNeighbourList not already in the visited cities. Continue until all 
-        cities are visited. If the city for which a neighbor must be found does not have any unvisited neighbors, return None.
-        """
-        startCityIndex = np.random.randint(0, self.numberOfCities)
-        visitedCities = np.array([startCityIndex])
-        currentCity = startCityIndex
-        while len(visitedCities) < self.numberOfCities:
-            # Make a numpy array with all the neighbors, then filter out those already visited.
-            neighbors = self.nearestNeighbourList[currentCity]
-            neighbors = np.delete(neighbors, np.where(np.isin(neighbors, visitedCities)))
-            
-            # If there are no neighbors left, return None.
-            if len(neighbors) == 0:
-                return None
-            
-            # Choose a random neighbor and add it to the visited cities.
-            neighbor = np.random.choice(neighbors)
-            visitedCities = np.append(visitedCities, neighbor)
-            currentCity = neighbor
+        return newPopulation, newDistances
 
-        return visitedCities
+    def localOptimization(self, population: np.array) -> np.array:
+        for i in range(population.shape[0]):
+            population[i] = naive3Opt(population[i], self.numberOfCities, self.distanceMatrix)
+        return population
+
+    def elitism(self, population: np.array, distances: np.array) -> Tuple[np.array, np.array]:
+        # Find the best individual's distance
+        bestDistance = np.min(distances)
+
+        # If the best distance so far is better than the best distance in the current population, replace the worst individual with the best individual so far
+        if self.bestObjective < bestDistance:
+            population[np.argmax(distances)] = self.bestSolution
+            distances[np.argmax(distances)] = self.bestObjective
+
+        return population, distances
+
     
-    def calculateFitness(self, solution: np.array):
-        """
-        Calculate the fitness of the given solution.
-        """
-        fitness = 0
-        for i in range(len(solution) - 1):
-            fitness += self.distanceMatrix[solution[i]][solution[i + 1]]
-        fitness += self.distanceMatrix[solution[-1]][solution[0]]
-
-        return fitness
-    
-    def calculatePopulationFitness(self):
-        """
-        Calculate the fitness of each solution in the population.
-        """
-        fitness = np.array([])
-        for solution in self.population:
-            fitness = np.append(fitness, self.calculateFitness(solution))
-
-        self.populationFitness = fitness
-
-    def kTournamentSelection(self, k: int):
-        """
-        Select k random solutions from the population and return the index of the best one.
-        """
-        solutions = np.random.randint(self.populationSize, size=k)
-        bestSolution = solutions[0]
-        for solution in solutions:
-            if self.populationFitness[solution] < self.populationFitness[bestSolution]:
-                bestSolution = solution
-
-        return bestSolution
-
-    def orderCrossover(self, parent1Index: int, parent2Index: int):
-        '''
-        Perform order crossover on the given parents. This creates two children, both numpy arrays.
-        '''
-        # Select two crossover points.
-        crossoverPoints = np.random.choice(self.numberOfCities, 2, replace=False)
-        crossoverPoints.sort()
-
-        # Get the parents
-        parent1 = self.population[parent1Index]
-        parent2 = self.population[parent2Index]
-
-        # Create the children.
-        child1 = np.empty(self.numberOfCities, dtype=int)
-        child2 = np.empty(self.numberOfCities, dtype=int)
-
-        # Copy the part between the crossover points to the children.
-        child1[crossoverPoints[0]:crossoverPoints[1]] = parent1[crossoverPoints[0]:crossoverPoints[1]]
-        child2[crossoverPoints[0]:crossoverPoints[1]] = parent2[crossoverPoints[0]:crossoverPoints[1]]
-
-        child1Index = crossoverPoints[1]
-        child2Index = crossoverPoints[1]
-        parent1Index = crossoverPoints[1]
-        parent2Index = crossoverPoints[1]
-
-        # Copy the rest of the parent to the children.
-        for i in range(self.numberOfCities):
-            # If the parent is already in the child, skip it.
-            if parent2[parent2Index] in child1:
-                parent2Index = (parent2Index + 1) % self.numberOfCities
-                continue
-
-            # If the child is already full, skip it.
-            if child1Index == self.numberOfCities:
-                break
-
-            child1[child1Index] = parent2[parent2Index]
-            child1Index = (child1Index + 1) % self.numberOfCities
-            parent2Index = (parent2Index + 1) % self.numberOfCities
-        
-        for i in range(self.numberOfCities):
-            # If the parent is already in the child, skip it.
-            if parent1[parent1Index] in child2:
-                parent1Index = (parent1Index + 1) % self.numberOfCities
-                continue
-
-            # If the child is already full, skip it.
-            if child2Index == self.numberOfCities:
-                break
-
-            child2[child2Index] = parent1[parent1Index]
-            child2Index = (child2Index + 1) % self.numberOfCities
-            parent1Index = (parent1Index + 1) % self.numberOfCities
-        
-        return child1, child2
-
-    def eliminationStep(self):
-        '''
-        Replace the current population with a new population, selected with the kTournamentSelection function.
-        '''
-        newPopulation = np.empty((0, self.numberOfCities), int)
-
-        # Add the best solution from the previous generation to the new population.
-        bestSolution = np.argmin(self.populationFitness)
-        newPopulation = np.append(newPopulation, [self.population[bestSolution]], axis=0)
-        self.population = np.delete(self.population, bestSolution, axis=0)
-
-        while len(newPopulation) < self.populationSize:
-            # Select a solution from the previous generation using kTournamentSelection. If the solution is not already in the new population, add it. TODO check time complexity.
-            solution = self.kTournamentSelection(self.kTournamentEliminationSize)
-            newPopulation = np.append(newPopulation, [self.population[solution]], axis=0)
-
-            # Remove the solution from the previous generation.
-            self.population = np.delete(self.population, solution, axis=0)
-                
-        self.population = newPopulation
-
-    def normalize(self):
-        """
-        Shift all cycles in the population such that the first element is 0.
-        """
-        for i in range(len(self.population)):
-            index = np.where(self.population[i] == 0)[0][0]
-            self.population[i] = np.roll(self.population[i], -index)
