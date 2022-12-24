@@ -69,56 +69,32 @@ def naive3Opt(solution: np.array, numberOfCities: int, distanceMatrix: np.array)
 
     return solution
 
-def greedyRandomized(numberOfCities: int, rcl: float, distanceMatrix: np.array) -> np.array:
-    individual = np.zeros(numberOfCities, dtype=np.int)
-    individual[0] = np.random.randint(0, numberOfCities)
-    
-    used = set(range(numberOfCities))
-    used.remove(individual[0])
-
-    for i in range(1, numberOfCities):
-        # Make a list of the candidates that are not yet used
-        candidates = []
-        notUsed = set(range(numberOfCities)) - used
-        for x in notUsed:
-            candidates.append(x)
-        
-        # Find the minimal distance
-        minimal_distance = np.min(distanceMatrix[individual[i-1]][candidates])
-
-        # Find the allowed distance
-        allowed_distance = (1 + rcl) * minimal_distance
-
-        # Make a list of the candidates that are not yet used and have a distance smaller than the allowed distance
-        candidates = []
-        for x in notUsed:
-            if distanceMatrix[individual[i-1]][x] <= allowed_distance:
-                candidates.append(x)
-
-        # Choose a random candidate from the list
-        individual[i] = np.random.choice(candidates, 1)[0]
-
-        # Add the chosen candidate to the set of used candidates
-        used.add(individual[i])
-
-    return individual
-        
-        
 def randomGreedy(numberOfCities: int, rcl: float, distanceMatrix: np.array) -> np.array:
         individual = np.zeros(numberOfCities, dtype=np.int)
         individual[0] = np.random.randint(0, numberOfCities)
         for i in range(1, numberOfCities, 1):
-            restricted_candidate_list = buildCandidateList(numberOfCities, rcl, distanceMatrix, individual[:i])
-            individual[i] = np.random.choice(restricted_candidate_list, 1)[0]
+            candidateList = buildCandidateList(numberOfCities, rcl, distanceMatrix, individual[:i])
+            individual[i] = np.random.choice(candidateList, 1)[0]
         return individual
 
+@jit(nopython=True)
 def buildCandidateList(numberOfCities: int, rcl: float, distanceMatrix: np.array, indices: np.array) -> np.array:
     last = indices[-1]
-    notUsed = set(range(numberOfCities)) - set(indices[:-1])
+    
+    notUsed = []
+    for i in range(numberOfCities):
+        if i not in indices[:-1]:
+            notUsed.append(i)
+    
     notUsed.remove(last)
+    
     candidates = []
-    minimal_distance = np.min(distanceMatrix[last][list(notUsed)])
-    allowed_distance = (1 + rcl) * minimal_distance
+    minimalDistance = np.inf
+    for i in range(len(notUsed)):
+        if distanceMatrix[last][notUsed[i]] < minimalDistance:
+            minimalDistance = distanceMatrix[last][notUsed[i]]
+
+    allowed_distance = (1 + rcl) * minimalDistance
     for x in notUsed:
         if distanceMatrix[last][x] <= allowed_distance:
             candidates.append(x)
@@ -171,8 +147,6 @@ class r0737124:
             population, distances = self.elimination(population)
             population, distances = self.removeDuplicates(population, distances)
             population, distances = self.elitism(population, distances)
-
-            
 
             meanObjective = np.mean(distances)
             bestObjective = np.min(distances)
@@ -229,7 +203,7 @@ class r0737124:
 
         # Select parents
         #parents = self.kTournamentSelection(population, self.numberOffspring)
-        parents = self.rouletteSelection(population, self.numberOffspring)
+        parents = self.kTournamentSelection(population, self.numberOffspring)
 
         # Recombine parents
         for index in range(0, self.numberOffspring, 2):
