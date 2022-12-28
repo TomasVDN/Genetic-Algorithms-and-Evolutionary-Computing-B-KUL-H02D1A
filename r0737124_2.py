@@ -39,14 +39,7 @@ def naive2Opt(solution: np.array, numberOfCities: int, distanceMatrix: np.array)
     return solution
 
 @jit(nopython=True)
-def naive3Opt(solution: np.array, numberOfCities: int, distanceMatrix: np.array) -> np.array:
-    '''
-    Naive 3-opt implementation: for each pair of edges, check if the new solution is better.
-    solution: 1D numpy array in the cycle notation containing the solution to optimize
-    numberOfCities: number of cities in the problem
-    distanceMatrix: 2D numpy array containing the distance matrix
-    returns: 1D numpy array in the cycle notation containing the optimized solution
-    '''
+def advanced2Opt(solution: np.array, numberOfCities: int, distanceMatrix: np.array) -> np.array:
     for point1 in range(numberOfCities):
         p1 = solution[0]
         p2 = solution[point1 - 1]
@@ -144,6 +137,7 @@ class r0737124:
             # Run local optimizer
             population = self.localOptimization(population)
 
+            
             population, distances = self.elimination(population)
             population, distances = self.removeDuplicates(population, distances)
             population, distances = self.elitism(population, distances)
@@ -152,14 +146,18 @@ class r0737124:
             bestObjective = np.min(distances)
             bestSolution = population[np.argmin(distances)]
             generation += 1
-
+            
             print(f"Generation {generation}: best objective {bestObjective}, mean objective {meanObjective}")
-
+            
             # Call the reporter with:
             #  - the mean objective function value of the population
             #  - the best objective function value of the population
             #  - a 1D numpy array in the cycle notation containing the best solution 
             #    with city numbering starting from 0
+
+            # Shift the best solution to start at city 0
+            bestSolution = np.roll(bestSolution, -np.argmin(bestSolution))
+
             timeLeft = self.reporter.report(meanObjective, bestObjective, bestSolution)
             if timeLeft < 0:
                 break
@@ -332,7 +330,7 @@ class r0737124:
 
     def localOptimization(self, population: np.array) -> np.array:
         for i in range(population.shape[0]):
-            population[i] = naive3Opt(population[i], self.numberOfCities, self.distanceMatrix)
+            population[i] = advanced2Opt(population[i], self.numberOfCities, self.distanceMatrix)
         return population
 
     def elitism(self, population: np.array, distances: np.array) -> Tuple[np.array, np.array]:
